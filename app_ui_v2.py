@@ -19,16 +19,11 @@ MENU = {
     "cold coffee": 60, "peri peri fries": 90, "paneer samosa": 20, "coke": 50
 }
 MENU_LIST = list(MENU.keys())
+NUM_MAP = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "ek": 1, "do": 2, "teen": 3}
 
-# Mapping for words to numbers (English & Hindi)
-NUM_MAP = {
-    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, 
-    "ek": 1, "do": 2, "teen": 3, "char": 4, "panch": 5
-}
+st.set_page_config(page_title="FoodChain Pro", page_icon="🍔", layout="wide")
 
-st.set_page_config(page_title="FoodChain AI Pro", page_icon="🍔", layout="wide")
-
-# --- 2. PERFORMANCE HELPERS ---
+# --- 2. HELPERS ---
 def clear_ram():
     gc.collect()
 
@@ -36,76 +31,74 @@ def speak_text(text, lang='en'):
     try:
         pipeline = KPipeline(lang_code='a' if lang == 'en' else 'h')
         gen = pipeline(text, voice='af_heart', speed=1.1)
-        for _, _, audio in gen:
-            sd.play(audio, 24000)
-        sd.wait() 
-        del pipeline
-        clear_ram()
+        for _, _, audio in gen: sd.play(audio, 24000)
+        sd.wait(); del pipeline; clear_ram()
     except: pass
 
-# --- 3. THE HYBRID LOGIC ---
-def process_logic_and_get_reply(text):
-    text_lower = text.lower()
+# --- 3. THE "BOUNCER" LOGIC ENGINE ---
+def hybrid_process(user_text):
+    text_lower = user_text.lower().strip()
     
-    # --- STEP 1: EXTRACT QUANTITY ---
-    qty = 1
-    # Look for digits (3)
-    digits = re.findall(r'\d+', text_lower)
-    if digits:
-        qty = int(digits[0])
-    else:
-        # Look for words (three/teen)
-        for word, val in NUM_MAP.items():
-            if word in text_lower:
-                qty = val
-                break
+    # --- ROUTE 1: GREETINGS (Hard Bypass - AI is turned OFF here) ---
+    greetings = ["hello", "hi", "how are you", "hey", "good morning", "morning"]
+    if any(text_lower.startswith(g) for g in greetings) and len(text_lower.split()) < 5:
+        return "Hello! I am doing great. Welcome to FoodChain! What can I get for you today?"
 
-    # --- STEP 2: DETECT INTENT (ADD VS REMOVE) ---
-    is_removal = any(word in text_lower for word in ["remove", "cancel", "hatao", "nahin", "nhi", "delete"])
+    # --- ROUTE 2: MENU QUERY (Hard Bypass - AI is turned OFF here) ---
+    menu_keywords = ["menu", "items", "list", "have", "sell", "card", "options"]
+    if any(m in text_lower for m in menu_keywords):
+        items_str = ", ".join([f"{item.title()} (₹{price})" for item, price in MENU.items()])
+        return f"We have: {items_str}. What would you like to order?"
+
+    # --- ROUTE 3: ORDER LOGIC (Python Math) ---
+    qty = 1
+    nums = re.findall(r'\d+', text_lower)
+    if nums: qty = int(nums[0])
+    else:
+        for word, val in NUM_MAP.items():
+            if word in text_lower: qty = val; break
+
+    is_removal = any(word in text_lower for word in ["remove", "cancel", "hatao", "nahin", "delete", "no"])
     
-    # --- STEP 3: UPDATE CART ---
-    items_updated = []
+    items_changed = []
     for item in MENU_LIST:
-        # Check if any keyword of the menu item is in the text
-        keywords = item.split()
-        if any(k in text_lower for k in keywords):
+        if any(word in text_lower.split() for word in item.split()):
             if is_removal:
                 if item in st.session_state.cart:
                     st.session_state.cart[item] = max(0, st.session_state.cart[item] - qty)
                     if st.session_state.cart[item] == 0: del st.session_state.cart[item]
-                    items_updated.append(f"removed {qty} {item}")
+                    items_changed.append(f"REMOVED {qty} {item}")
             else:
                 st.session_state.cart[item] = st.session_state.cart.get(item, 0) + qty
-                items_updated.append(f"added {qty} {item}")
+                items_changed.append(f"ADDED {qty} {item}")
 
-    # --- STEP 4: GENERATE AI CONVERSATION ---
-    current_cart = ", ".join([f"{q} {i}" for i, q in st.session_state.cart.items()]) if st.session_state.cart else "empty"
+    # --- ROUTE 4: ORDER CONFIRMATION (AI ONLY USED HERE) ---
+    if items_changed:
+        report = ", ".join(items_changed)
+        current_cart = ", ".join([f"{q} {i}" for i, q in st.session_state.cart.items()])
+        
+        prompt = f"Cashier: Confirm {report}. Total cart: {current_cart}. Max 10 words. No sizes/toppings."
+        try:
+            # We only wake up Ollama if there is an actual order change to talk about
+            res = ollama.chat(model='qwen2.5:0.5b', messages=[{'role': 'user', 'content': prompt}])
+            return res['message']['content']
+        except:
+            return f"Done! I've {report}. Anything else?"
     
-    prompt = f"""
-    Context: You are a FoodChain cashier. 
-    Action taken: {', '.join(items_updated) if items_updated else 'No items matched'}.
-    User said: "{text}".
-    Cart now: {current_cart}.
-    Rule: Confirm the change naturally. Max 12 words. NEVER ask about toppings or sizes.
-    """
-    
-    try:
-        res = ollama.chat(model='qwen2.5:0.5b', messages=[{'role': 'system', 'content': prompt}])
-        reply = res['message']['content']
-        # Fail-safe: if AI halluicates a question, replace it
-        if "?" in reply and "else" not in reply.lower():
-            return f"Understood. I've updated your cart. Anything else?"
-        return reply
-    except:
-        return "Cart updated. What's next?"
+    # --- ROUTE 5: FALLBACK ---
+    return "I heard you, but I didn't catch a menu item. You can ask for burgers, pizza, or chai."
 
-# --- 4. INTERACTION LOOP ---
+# --- 4. INTERACTION ---
 def run_assistant():
     CHUNK, RATE = 1024, 16000
     p = pyaudio.PyAudio()
     stream = p.open(format=pyaudio.paInt16, channels=1, rate=RATE, input=True)
-    with st.spinner("🎙️ Listening..."):
+    
+    # LIVE MIC ICON (Adding the requested status indicator)
+    with st.status("🔴 **LIVE MIC: LISTENING...**", expanded=True) as status:
         frames = [stream.read(CHUNK) for _ in range(0, int(RATE / CHUNK * 6))]
+        status.update(label="🟢 **PROCESSING VOICE...**", state="running")
+    
     stream.stop_stream(); stream.close(); p.terminate()
     
     with wave.open("input.wav", 'wb') as wf:
@@ -113,54 +106,41 @@ def run_assistant():
         wf.writeframes(b''.join(frames))
 
     stt_model = WhisperModel("base", device="cpu", compute_type="int8")
-    segments, info = stt_model.transcribe("input.wav", beam_size=3)
+    segments, _ = stt_model.transcribe("input.wav", beam_size=3)
     user_text = "".join([s.text for s in segments]).strip()
     del stt_model
     clear_ram()
     
     if user_text:
         st.session_state.messages.append({"role": "user", "content": user_text})
-        
-        # Determine Welcome vs Normal
-        if not st.session_state.session_active:
-            st.session_state.session_active = True
-            welcome = "Welcome to FoodChain! "
-            reply = process_logic_and_get_reply(user_text)
-            full_reply = welcome + reply
-        else:
-            full_reply = process_logic_and_get_reply(user_text)
-
-        st.session_state.messages.append({"role": "assistant", "content": full_reply})
-        speak_text(full_reply, lang='hi' if info.language == 'hi' else 'en')
+        reply = hybrid_process(user_text)
+        st.session_state.messages.append({"role": "assistant", "content": reply})
+        speak_text(reply)
 
 # --- 5. UI ---
 if "cart" not in st.session_state: st.session_state.cart = {}
 if "messages" not in st.session_state: st.session_state.messages = []
-if "session_active" not in st.session_state: st.session_state.session_active = False
 
-tab_order, tab_manager = st.tabs(["🛒 Take Order", "📊 Dashboard"])
+st.title("🍔 FoodChain Hybrid AI Pro")
+c1, c2 = st.columns([2, 1])
 
-with tab_order:
-    st.title("🍔 FoodChain AI Pro V2")
-    c1, c2 = st.columns([2, 1])
-    with c1:
-        label = "🚀 START CONVERSATION" if not st.session_state.session_active else "🎙️ TAP TO SPEAK"
-        if st.button(label, use_container_width=True, type="primary"):
-            run_assistant(); st.rerun()
-        for msg in st.session_state.messages:
-            with st.chat_message(msg["role"]): st.markdown(msg["content"])
-    with c2:
-        st.subheader("🛒 Cart")
-        total = sum(MENU[itm] * q for itm, q in st.session_state.cart.items())
-        for itm, q in st.session_state.cart.items():
-            st.write(f"**{q}x {itm.title()}** - ₹{MENU[itm]*q}")
-        st.divider(); st.markdown(f"### Total: ₹{total}")
-        if st.button("✅ CONFIRM & SAVE", use_container_width=True):
-            if st.session_state.cart:
-                conn = sqlite3.connect(DB_NAME); cursor = conn.cursor()
-                cursor.execute("INSERT INTO orders (timestamp, items, total_price) VALUES (?, ?, ?)",
-                    (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), json.dumps(st.session_state.cart), total))
-                conn.commit(); conn.close()
-                speak_text(f"Thank you! Total is {total} rupees.")
-                st.session_state.cart = {}; st.session_state.messages = []; st.session_state.session_active = False
-                st.rerun()
+with c1:
+    if st.button("🎙️ TAP TO SPEAK", use_container_width=True, type="primary"):
+        run_assistant(); st.rerun()
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]): st.markdown(msg["content"])
+
+with c2:
+    st.subheader("🛒 Current Cart")
+    total = sum(MENU[itm] * q for itm, q in st.session_state.cart.items())
+    for itm, q in st.session_state.cart.items():
+        st.write(f"**{q}x {itm.title()}** - ₹{MENU[itm]*q}")
+    st.divider(); st.markdown(f"### Total: ₹{total}")
+    if st.button("✅ CONFIRM ORDER", use_container_width=True):
+        if st.session_state.cart:
+            conn = sqlite3.connect(DB_NAME); cursor = conn.cursor()
+            cursor.execute("INSERT INTO orders (timestamp, items, total_price) VALUES (?, ?, ?)",
+                (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), json.dumps(st.session_state.cart), total))
+            conn.commit(); conn.close()
+            speak_text(f"Thank you! Your order is saved.")
+            st.session_state.cart = {}; st.session_state.messages = []; st.rerun()
