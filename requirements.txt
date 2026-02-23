@@ -1,0 +1,9 @@
+streamlit
+groq
+faster-whisper
+thefuzz
+pandas
+numpy
+streamlit-mic-recorder
+openai
+gtts
